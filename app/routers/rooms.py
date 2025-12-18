@@ -1,59 +1,13 @@
-from datetime import datetime
-import secrets
-import string
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
+from .. import crud, models, schemas
+from ..crud import NodeUnavailable, RoomLimitExceeded
 from ..deps import get_db, get_current_user
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
-
-# Сколько комнат можно создать одному пользователю на текущем тарифе
-MAX_ROOMS_PER_USER = 1
-
-
-def generate_room_code(length: int = 6) -> str:
-    """
-    Генерирует короткий код комнаты: например, 'a7f3kx'.
-    """
-    alphabet = string.ascii_lowercase + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
-
-
-def pick_media_node_for_new_room(db: Session) -> "models.MediaNode":
-    """
-    Выбираем медиасервер (ноду), на который можно повесить новую комнату.
-
-    Ожидается, что в models есть класс MediaNode с полями:
-    - id: int
-    - base_url: str
-    - is_online: bool
-    - capacity_rooms: int
-    - active_rooms: int
-    """
-    node = (
-        db.query(models.MediaNode)
-        .filter(models.MediaNode.is_online == True)  # noqa: E712
-        .order_by(models.MediaNode.active_rooms.asc())
-        .first()
-    )
-
-    if not node:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Нет доступных медиасерверов",
-        )
-
-    if node.active_rooms >= node.capacity_rooms:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Нет свободных серверов для создания комнаты",
-        )
-
-    return node
 
 
 # ------------------------
@@ -69,13 +23,7 @@ def get_my_rooms(
     """
     Возвращает список комнат, созданных текущим пользователем.
     """
-    rooms = (
-        db.query(models.Room)
-        .filter(models.Room.owner_id == current_user.id)
-        .order_by(models.Room.created_at.desc())
-        .all()
-    )
-    return rooms
+    return crud.list_user_rooms(db, current_user)
 
 
 # ------------------------
@@ -90,59 +38,20 @@ def create_room(
     current_user: models.User = Depends(get_current_user),
 ):
     """
-    Создать комнату.
-
-    Ограничения:
-    - не более MAX_ROOMS_PER_USER комнат на пользователя.
+    Создать комнату, соблюдая лимиты подписки.
     """
-    # Проверка лимита комнат для пользователя
-    existing_count = (
-        db.query(models.Room)
-        .filter(models.Room.owner_id == current_user.id)
-        .count()
-    )
-    if existing_count >= MAX_ROOMS_PER_USER:
+    try:
+        return crud.create_room(db, room_in, current_user)
+    except RoomLimitExceeded as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Лимит комнат по текущему тарифу исчерпан. "
-                "Удалите одну из комнат или обновите тариф."
-            ),
-        )
-
-    # Название комнаты берём из title или name
-    title = (room_in.title or room_in.name or "").strip()
-    if not title:
-        title = None
-
-    # Выбираем медиасервер
-    node = pick_media_node_for_new_room(db)
-
-    # Генерируем уникальный код комнаты
-    code = generate_room_code()
-    while db.query(models.Room).filter(models.Room.code == code).first():
-        code = generate_room_code()
-
-    new_room = models.Room(
-        code=code,
-        title=title,
-        owner_id=current_user.id,
-        max_participants=room_in.max_participants,
-        status="active",
-        created_at=datetime.utcnow(),
-        media_node_id=node.id,  # поле связи с нодой
-    )
-
-    db.add(new_room)
-
-    # Увеличиваем счётчик активных комнат на ноде
-    node.active_rooms += 1
-    db.add(node)
-
-    db.commit()
-    db.refresh(new_room)
-
-    return new_room
+            detail=str(exc),
+        ) from exc
+    except NodeUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
 
 # ------------------------
@@ -160,7 +69,7 @@ def get_room_by_code(
     Получить информацию о комнате по её коду.
     Используется в основном ведущим (владелец комнаты).
     """
-    room = db.query(models.Room).filter(models.Room.code == code).first()
+    room = crud.get_room_by_code(db, code)
     if not room:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -190,41 +99,16 @@ def get_room_node(
 
     Логика:
     - находим комнату по коду;
-    - если у комнаты уже задан media_node_id — берём эту ноду;
-    - если нет — подбираем ноду с минимальной загрузкой и привязываем комнату к ней.
+    - возвращаем информацию о ноде, на которой размещена комната.
     """
-    room = db.query(models.Room).filter(models.Room.code == code).first()
+    room = crud.get_room_by_code(db, code)
     if not room:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Комната не найдена",
         )
 
-    node = None
-
-    # Если комната уже привязана к ноде
-    if getattr(room, "media_node_id", None):
-        node = (
-            db.query(models.MediaNode)
-            .filter(models.MediaNode.id == room.media_node_id)
-            .first()
-        )
-        # если почему-то нода пропала — выбираем свежую
-        if not node:
-            node = pick_media_node_for_new_room(db)
-            room.media_node_id = node.id
-            node.active_rooms += 1
-            db.add(room)
-            db.add(node)
-            db.commit()
-    else:
-        # Старые комнаты без media_node_id — назначаем ноду
-        node = pick_media_node_for_new_room(db)
-        room.media_node_id = node.id
-        node.active_rooms += 1
-        db.add(room)
-        db.add(node)
-        db.commit()
+    node = room.node or db.get(models.ServerNode, room.node_id)
 
     if not node:
         raise HTTPException(
