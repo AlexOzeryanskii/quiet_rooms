@@ -11,6 +11,14 @@ from .models import NodeStatus, RoomStatus, User, UserSubscription
 from .auth import hash_password, verify_password
 
 
+class RoomLimitExceeded(Exception):
+    """Лимит комнат для пользователя исчерпан."""
+
+
+class NodeUnavailable(Exception):
+    """Нет подходящей ноды для создания комнаты."""
+
+
 # ---------- ВСПОМОГАТЕЛЬНЫЕ ----------
 
 def generate_room_code(length: int = 8) -> str:
@@ -111,8 +119,14 @@ def get_node(db: Session, node_id: str) -> Optional[models.ServerNode]:
 
 
 def update_node(db: Session, node: models.ServerNode, data: schemas.ServerNodeUpdate) -> models.ServerNode:
-    for field, value in data.model_dump(exclude_unset=True).items():
+    payload = data.model_dump(exclude_unset=True)
+    api_key = payload.pop("api_key", None)
+
+    for field, value in payload.items():
         setattr(node, field, value)
+
+    if api_key is not None:
+        node.api_key_hash = api_key
     db.commit()
     db.refresh(node)
     return node
@@ -153,19 +167,23 @@ def create_room(db: Session, data: schemas.RoomCreate, owner: User) -> models.Ro
     limit = get_user_active_room_limit(db, owner)
     current = get_user_active_room_count(db, owner)
     if current >= limit:
-        raise RuntimeError("Превышен лимит комнат по подписке. Докупите ещё одну комнату.")
+        raise RoomLimitExceeded("Превышен лимит комнат по подписке. Докупите ещё одну комнату.")
 
     node = pick_node_for_new_room(db)
     if not node:
-        raise RuntimeError("Нет доступных серверов для создания комнаты")
+        raise NodeUnavailable("Нет доступных серверов для создания комнаты")
 
     code = generate_room_code()
     while db.scalar(select(models.Room).where(models.Room.code == code)):
         code = generate_room_code()
 
+    title = (data.title or data.name or None)
+    if title:
+        title = title.strip() or None
+
     room = models.Room(
         code=code,
-        title=data.title,
+        title=title,
         owner_id=owner.id,
         node_id=node.id,
         max_participants=data.max_participants,

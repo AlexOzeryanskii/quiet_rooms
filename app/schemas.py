@@ -1,8 +1,8 @@
 from datetime import datetime
-from typing import Optional, List
-from uuid import UUID
+from typing import List, Optional
 
-from pydantic import BaseModel, EmailStr, constr, field_validator
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, EmailStr, constr, field_validator
+from .models import NodeStatus, RoomStatus
 
 
 # ---------------------------
@@ -31,19 +31,20 @@ class UserLogin(BaseModel):
 
 
 class UserOut(UserBase):
-    id: int
-    is_active: bool
+    id: str
+    max_rooms: int
+    created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserProfile(UserOut):
     """
     Профиль пользователя для /users/me.
-    Сейчас = UserOut, но можно расширять (тариф, лимиты и т.п.).
     """
-    pass
+
+    current_rooms: int
+    room_limit: int
 
 
 class Token(BaseModel):
@@ -83,16 +84,16 @@ class RoomUpdate(BaseModel):
 
 
 class RoomOut(BaseModel):
-    id: int
+    id: str
     code: str
     title: Optional[str]
-    owner_id: int
+    owner_id: str
+    node_id: str
     max_participants: int
-    status: str
+    status: RoomStatus
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class RoomListOut(BaseModel):
@@ -108,78 +109,57 @@ class RoomNodeInfo(BaseModel):
 # Ноды (media-сервера)
 # ---------------------------
 
-class NodeRegister(BaseModel):
+class ServerNodeCreate(BaseModel):
     """
-    Регистрация/создание ноды медиа-сервера.
+    Создание ноды медиа-сервера.
     """
-    node_id: str
-    base_url: str
-    capacity_rooms: int = 3  # максимум комнат на этой ноде
 
-
-class NodeHeartbeat(BaseModel):
-    """
-    Пинг от ноды о текущей загрузке.
-    """
-    active_rooms: int
-    cpu_load: Optional[float] = None
-    mem_load: Optional[float] = None
-
-
-class NodeOut(BaseModel):
-    """
-    То, что отдаём наружу как описание ноды.
-    """
-    id: int
-    node_id: str
-    base_url: str
-    capacity_rooms: int
-    active_rooms: int
-    is_online: bool
-    last_heartbeat: Optional[datetime]
-
-    class Config:
-        from_attributes = True
-
-
-# ---- Совместимость со старым crud.py ----
-# create_node(db, data: schemas.ServerNodeCreate)
-# update_node(db, node, data: schemas.ServerNodeUpdate)
-# heartbeat_node(db, node, hb: schemas.ServerNodeHeartbeat)
-# и ответы schemas.ServerNodeOut
-
-class ServerNodeCreate(NodeRegister):
-    """
-    Алиас для старого имени схемы:
-    ServerNodeCreate == NodeRegister
-    """
-    pass
+    name: str
+    base_url: AnyHttpUrl
+    max_rooms: int = 3
+    api_key: Optional[str] = None
 
 
 class ServerNodeUpdate(BaseModel):
     """
     Для обновления ноды: все поля опциональны.
-    Подходит под update_node, где могут менять базовый URL, лимиты и т.п.
     """
-    base_url: Optional[str] = None
-    capacity_rooms: Optional[int] = None
+
+    name: Optional[str] = None
+    base_url: Optional[AnyHttpUrl] = None
+    max_rooms: Optional[int] = None
     active_rooms: Optional[int] = None
-    is_online: Optional[bool] = None
+    status: Optional[NodeStatus] = None
+    api_key: Optional[str] = None
 
 
-class ServerNodeHeartbeat(NodeHeartbeat):
+class ServerNodeHeartbeat(BaseModel):
     """
-    Алиас для старого имени схемы:
-    ServerNodeHeartbeat == NodeHeartbeat
+    Пинг от ноды о текущей загрузке.
     """
-    pass
+
+    active_rooms: int
+    cpu_load: Optional[float] = None
+    mem_load: Optional[float] = None
 
 
-class ServerNodeOut(NodeOut):
+class ServerNodeOut(BaseModel):
     """
-    Алиас для совместимости, если где-то используется ServerNodeOut.
+    То, что отдаём наружу как описание ноды.
     """
-    pass
+
+    id: str
+    name: str
+    base_url: AnyHttpUrl
+    status: NodeStatus
+    max_rooms: int
+    active_rooms: int
+    cpu_load: Optional[float] = None
+    mem_load: Optional[float] = None
+    last_heartbeat: Optional[datetime] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ---------------------------
@@ -195,25 +175,23 @@ class TariffPlanBase(BaseModel):
 
 
 class TariffPlanOut(TariffPlanBase):
-    id: int
+    id: str
 
-    class Config:
-        from_attributes = True
-
-
-class UserSubscriptionBase(BaseModel):
-    plan_id: int
-    rooms_limit: int
-    active_until: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
 
 
-class UserSubscriptionOut(UserSubscriptionBase):
-    id: int
-    user_id: int
-    is_active: bool
+class UserSubscriptionOut(BaseModel):
+    id: str
+    user_id: str
+    room_count: int
+    status: str
+    provider: str
+    external_id: Optional[str] = None
+    amount_rub: int
+    description: Optional[str] = None
+    created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ---------------------------
