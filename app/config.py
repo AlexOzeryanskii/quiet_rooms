@@ -1,10 +1,13 @@
+import secrets
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 
 class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./quiet_rooms.db"
 
-    SECRET_KEY: str = "change_me_in_env"
+    SECRET_KEY: str = Field(default_factory=lambda: secrets.token_urlsafe(32))
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
 

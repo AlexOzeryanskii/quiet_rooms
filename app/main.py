@@ -4,12 +4,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from .database import engine, Base
 from .routers import auth, nodes, rooms, billing, users
 
-Base.metadata.create_all(bind=engine)
-
 app = FastAPI(
     title="Quiet Rooms Control Plane",
     version="0.4.0",
 )
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    """Инициализируем схему БД при запуске приложения."""
+    Base.metadata.create_all(bind=engine)
 
 # -----------------------
 # CORS — обязательно!
