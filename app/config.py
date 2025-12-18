@@ -1,0 +1,25 @@
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    DATABASE_URL: str = "sqlite:///./quiet_rooms.db"
+
+    SECRET_KEY: str = "change_me_in_env"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
+
+    DEFAULT_NODE_MAX_ROOMS: int = 3
+
+    # --- YooKassa ---
+    YOOKASSA_SHOP_ID: str = "YOUR_SHOP_ID"
+    YOOKASSA_SECRET_KEY: str = "YOUR_SECRET_KEY"
+    # URL, на который ЮKassa будет слать webhook (на бою: https://your.domain/api/billing/yookassa/webhook)
+    YOOKASSA_WEBHOOK_URL: str = "https://example.com/api/billing/yookassa/webhook"
+
+    # Цена комнаты (в рублях)
+    ROOM_PRICE_RUB: int = 1200
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+
+settings = Settings()
